@@ -3,9 +3,10 @@ credentials-file: /etc/cloudflared/notionmcp.json
 
 ingress:
   - hostname: notionmcp.nowhere-else.co.uk
-    service: http://mcp:3333
+    service: http://api:3333
     originRequest:
       noTLSVerify: true
       disableChunkedEncoding: false
   - service: http_status:404
+
 

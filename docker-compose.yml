@@ -1,5 +1,23 @@
 services:
-  mcp:
+  postgres:
+    image: postgres:15-alpine
+    container_name: notionmcp-postgres
+    environment:
+      POSTGRES_USER: notionmcp
+      POSTGRES_PASSWORD: notionmcp
+      POSTGRES_DB: notionmcp
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notionmcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
     build: .
     container_name: mcp-notion-server
     ports:
@@ -10,6 +28,9 @@ services:
       - .env
     volumes:
       - ./app:/app/app
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3333/health"]
@@ -22,8 +43,11 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: notionmcp-tunnel
     depends_on:
-      - mcp
+      - api
     command: tunnel --no-autoupdate run notionmcp
     volumes:
       - ./cloudflared:/etc/cloudflared
     restart: unless-stopped
+
+volumes:
+  postgres_data:

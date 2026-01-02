@@ -1,0 +1,691 @@
+# Hybrid MCP + OpenAPI Actions Notion MCP — Implementation Spec (Cursor-ready)
+
+This document is a **line-by-line expansion** of your original REST-first spec into a **hybrid platform**:
+
+* **MCP Developer Mode (SSE)** for native ChatGPT tool use
+* **REST + OpenAPI 3.1 (Actions-ready)** for Custom GPT Actions
+
+It retains the same level of detail and constraints as the original file spec and adds the MCP surface without duplicating business logic.
+
+Source baseline: your provided REST-first spec. fileciteturn1file0
+
+---
+
+## 0. Purpose
+
+Build a **Hybrid “Notion MCP”** service that allows:
+
+1. **ChatGPT Developer Mode (MCP connector)** to fully manage Notion using **SSE-based MCP tools**.
+2. **ChatGPT Actions** (Custom GPT) to fully manage Notion using a **small, Actions-compatible REST API** described by **OpenAPI 3.1**.
+
+The service must enable ChatGPT to:
+
+* create/modify databases, properties, relations, rollups, formulas
+* create/modify pages and blocks
+* safely apply large-scale changes (bulk, jobs)
+* keep an audit trail and prevent duplicates (idempotency)
+* bootstrap and evolve a “Second Brain / OS” **by ChatGPT orchestration** (no hard-coded OS schema in the server)
+
+Stack: **FastAPI + Docker Compose + Notion OAuth**, plus **fastmcp** for MCP.
+
+---
+
+## 1. Architecture Overview
+
+### 1.1 Components
+
+1. **Hybrid API Service (FastAPI)**
+
+   * Hosts REST endpoints under `/v1/...`
+   * Serves OpenAPI at `/openapi.json`
+   * Hosts OAuth endpoints under `/oauth/...`
+   * Hosts MCP endpoint(s) for SSE
+
+2. **MCP Server Layer (fastmcp)**
+
+   * Exposes MCP tools to ChatGPT Developer Mode
+   * Translates tool calls to the **Core Engine**
+
+3. **Core Engine (shared)**
+
+   * Implements all Notion operations, validations, safety checks
+   * Shared by both REST facade and MCP layer
+
+4. **Token Store (Postgres)**
+
+   * Stores connections + tokens encrypted at rest
+   * Stores audit logs
+   * Stores idempotency keys
+   * Stores optional `os_state` metadata
+
+5. **Optional Redis (recommended)**
+
+   * Rate-limit backoff cache
+   * Short-lived idempotency cache
+   * Job progress cache
+
+### 1.2 Deployment
+
+* `docker-compose.yml` orchestrates:
+
+  * `api`
+  * `postgres`
+  * optional `redis`
+* Must run behind Cloudflare Tunnel / reverse proxy (HTTPS termination upstream)
+
+### 1.3 Data Flows
+
+**Actions Flow**
+ChatGPT Action → REST endpoint → Core Engine → Notion API → normalized response
+
+**MCP Flow**
+ChatGPT MCP tool call → MCP layer (SSE) → Core Engine → Notion API → normalized response
+
+---
+
+## 2. Security, Auth, and Governance
+
+### 2.1 OAuth (Notion)
+
+Implement full OAuth 2.0 Authorization Code flow.
+
+Endpoints:
+
+* `GET /oauth/start`
+
+  * Query params: `state`, optional `return_url`, optional `connection_hint`
+  * Redirects to Notion authorization URL
+
+* `GET /oauth/callback`
+
+  * Query params: `code`, `state`
+  * Exchanges code for tokens
+  * Creates or updates a `connection_id`
+  * Redirects to `return_url` (if provided)
+
+Required env vars:
+
+* `NOTION_OAUTH_CLIENT_ID`
+* `NOTION_OAUTH_CLIENT_SECRET`
+* `NOTION_OAUTH_REDIRECT_URI`
+* `TOKEN_ENCRYPTION_KEY` (Fernet or equivalent)
+
+### 2.2 Client-to-Server Authentication (Actions)
+
+Support **Bearer token** auth:
+
+* Header: `Authorization: Bearer <ACTION_API_TOKEN>`
+
+Env var:
+
+* `ACTION_API_TOKEN`
+
+### 2.3 MCP Authentication
+
+MCP connector uses OAuth (recommended):
+
+* MCP tool calls must carry an authenticated principal mapped to a `connection_id`
+* If the MCP platform provides an authenticated user identity, map it to a connection.
+* If not, require `connection_id` as part of the MCP tool args.
+
+### 2.4 Multi-workspace / multi-user
+
+Support multiple Notion workspace connections.
+
+**Actions constraint:** Custom headers may be unreliable; do not depend on `X-Connection-Id`. fileciteturn1file0
+
+Therefore:
+
+* For Actions endpoints, require `connection_id` in request body (preferred), or query param.
+* For MCP tools, accept `connection_id` in tool args.
+
+### 2.5 Audit logging (must-have)
+
+Log all write operations to `audit_log`:
+
+* `request_id` (uuid)
+* actor: `chatgpt_action` or `chatgpt_mcp`
+* endpoint/tool name
+* connection_id
+* notion ids touched (jsonb)
+* human-readable summary
+* success/failure + error code
+* created_at
+
+### 2.6 Rate limiting & backoff
+
+Implement Notion API retries:
+
+* exponential backoff for 429 and transient 5xx
+* max retries configurable
+* return safe error envelope
+
+### 2.7 Idempotency for writes
+
+Support `Idempotency-Key` on write endpoints (Actions)
+
+* store request hash + response (TTL)
+
+For MCP tools:
+
+* accept `idempotency_key` arg
+* apply same storage logic
+
+---
+
+## 3. API Contract Principles (Actions)
+
+### 3.1 Versioning
+
+All endpoints under `/v1`.
+
+### 3.2 Standard Response Envelope
+
+Return:
+
+```json
+{ "ok": true, "result": { ... }, "error": null, "meta": { "request_id": "..." } }
+```
+
+Errors:
+
+```json
+{ "ok": false, "result": null, "error": { "code": "...", "message": "...", "details": {} }, "meta": { "request_id": "..." } }
+```
+
+### 3.3 OpenAPI 3.1
+
+* Serve at `GET /openapi.json`
+* Stable `operationId`
+* Define shared schemas; allow `additionalProperties` where Notion objects vary
+
+### 3.4 Read/write separation
+
+* Reads via GET/POST where needed
+* Writes via POST/PATCH/DELETE
+
+---
+
+## 4. Core Resources & Endpoints (Full internal set)
+
+This section defines the **full** REST surface implemented by the server.
+**However, only a minimized subset is exported in the Actions OpenAPI** (see §7).
+
+### 4.1 Health & Meta
+
+* `GET /health` → `{ ok: true }`
+* `GET /v1/meta` → version, build hash, notion status
+
+### 4.2 OAuth & Connections
+
+* `GET /oauth/start`
+* `GET /oauth/callback`
+* `GET /v1/connections` → list (redacted)
+* `POST /v1/connections/refresh` → refresh token if supported
+* `DELETE /v1/connections/{connection_id}` → revoke locally (optional remote revoke)
+
+Connection model:
+
+* `connection_id` uuid
+* `workspace_id`, `workspace_name`
+* token ciphertext
+* created/updated
+
+### 4.3 Search
+
+* `POST /v1/notion/search`
+  Body:
+
+  ```json
+  {
+    "connection_id": "...",
+    "query": "...",
+    "filter": {"property":"object","value":"database|page"},
+    "sort": {"direction":"ascending","timestamp":"last_edited_time"}
+  }
+  ```
+
+### 4.4 Databases
+
+* `POST /v1/databases` create
+* `GET /v1/databases/{database_id}` retrieve
+* `PATCH /v1/databases/{database_id}` update title/properties
+* `POST /v1/databases/{database_id}/query` query
+
+Create request (subset):
+
+```json
+{
+  "connection_id": "...",
+  "parent_page_id": "...",
+  "title": "...",
+  "properties": { ... },
+  "icon": null,
+  "cover": null
+}
+```
+
+### 4.5 Pages
+
+* `POST /v1/pages` create
+* `GET /v1/pages/{page_id}` retrieve
+* `PATCH /v1/pages/{page_id}` update properties
+* `POST /v1/pages/{page_id}/archive` archive/unarchive
+
+### 4.6 Blocks
+
+* `GET /v1/blocks/{block_id}/children` list children
+* `PATCH /v1/blocks/{block_id}` update block
+* `POST /v1/blocks/{block_id}/children` append children
+
+### 4.7 Assets (optional)
+
+* `POST /v1/assets/url` store external URL as file property or bookmark
+
+---
+
+## 5. Operating Mode: ChatGPT Builds the OS (No Built-in Second Brain)
+
+### 5.1 Principle
+
+The server **must not** embed a predefined OS schema.
+It provides **complete primitives** so ChatGPT can design/create/evolve the OS.
+
+### 5.2 Must support
+
+* full CRUD over databases/pages/blocks
+* property CRUD including:
+
+  * select / multi-select / status
+  * date / number / checkbox / url / email / phone
+  * people (where supported)
+  * relation
+  * rollup
+  * formula
+* “views” handling:
+
+  * if Notion API supports views: manage them
+  * else: store view definitions server-side (saved filters/sorts) and apply via query
+
+### 5.3 Capability over opinion
+
+No hardcoded:
+
+* database names
+* property schemas
+* relations
+* OS structure
+
+---
+
+## 6. High-level “Assistant-friendly” Operations (Must-have)
+
+These reduce tool-chaining and increase reliability.
+
+### 6.1 Upsert patterns
+
+Implement generic upsert (preferred) plus optional typed wrappers.
+
+**Generic**
+
+* `POST /v1/upsert`
+
+  ```json
+  {
+    "connection_id": "...",
+    "database_id": "...",
+    "unique": {"property": "Name", "value": "Project X"},
+    "properties": { "Status": {"type":"select","value":"In Progress"} },
+    "content_blocks": [ ... ]
+  }
+  ```
+
+Optional convenience wrappers:
+
+* `POST /v1/upsert/project`
+* `POST /v1/upsert/task`
+* `POST /v1/upsert/knowledge`
+
+Upsert semantics:
+
+* find by unique key (name + optional external_id)
+* create if missing else update
+
+### 6.2 Linking
+
+* `POST /v1/link`
+
+  ```json
+  {
+    "connection_id": "...",
+    "from": {"type":"page","id":"..."},
+    "to": {"type":"page","id":"..."},
+    "relation_property": "Project"
+  }
+  ```
+
+### 6.3 Bulk operations
+
+* `POST /v1/bulk`
+  Execute multiple operations:
+
+```json
+{
+  "connection_id": "...",
+  "mode": "stop_on_error|continue_on_error",
+  "ops": [
+    {"op": "upsert", "args": {...}},
+    {"op": "link", "args": {...}},
+    {"op": "notion.request", "args": {...}}
+  ]
+}
+```
+
+### 6.4 Property Builder / Normalizer
+
+Support an assistant-friendly property format:
+
+```json
+{ "properties": { "Due": {"type":"date","value":"2026-01-10"} } }
+```
+
+Server translates to Notion API.
+
+---
+
+## 7. OpenAPI Actions Constraints & Endpoint Minimisation Strategy (Must-have)
+
+Actions constraints (design around them): fileciteturn1file0
+
+* Custom headers unreliable → do not require `X-Connection-Id`
+* ~45s timeouts → use job-based flows for long operations
+* payload size limits → keep responses compact
+* practical limit on OpenAPI operation count → keep under ~30; target **≤ 12**
+
+### 7.1 Endpoint minimisation strategy
+
+Expose a small number of highly capable endpoints:
+
+1. **Generic Notion proxy** (breadth)
+2. A small set of ergonomic helpers (common patterns)
+3. Bulk + Jobs (reduce chaining)
+
+#### Recommended minimal Actions operation set (≤ 12)
+
+Public:
+
+* `GET /health`
+* `GET /openapi.json`
+
+Secured:
+
+* `GET /v1/connections` (optional but helpful)
+* `POST /v1/notion/request` (generic Notion proxy)
+* `POST /v1/search` (optional; can be via proxy)
+* `POST /v1/upsert`
+* `POST /v1/link`
+* `POST /v1/bulk`
+* `POST /v1/jobs`
+* `GET /v1/jobs/{job_id}`
+
+If `notion/request` is implemented well, you can drop `/v1/search` and other “nice” endpoints.
+
+### 7.2 Actions OpenAPI endpoint definitions (detailed)
+
+#### 7.2.1 `POST /v1/notion/request` (Generic proxy)
+
+Purpose: allow breadth without bloating OpenAPI.
+
+Request:
+
+```json
+{
+  "connection_id": "...",
+  "method": "GET|POST|PATCH|DELETE",
+  "path": "/v1/notion/...", 
+  "body": { ... },
+  "query": { ... }
+}
+```
+
+Rules:
+
+* Only allow a safe allowlist of Notion API routes.
+* Strip/deny token-related headers.
+* Enforce maximum payload size.
+* Normalize response envelope.
+
+#### 7.2.2 `POST /v1/upsert`
+
+As defined in §6.1.
+
+#### 7.2.3 `POST /v1/link`
+
+As defined in §6.2.
+
+#### 7.2.4 `POST /v1/bulk`
+
+As defined in §6.3.
+
+#### 7.2.5 Jobs
+
+`POST /v1/jobs`
+
+```json
+{
+  "connection_id": "...",
+  "kind": "bulk|os_plan_apply|migration|export",
+  "args": { ... }
+}
+```
+
+`GET /v1/jobs/{job_id}`
+Returns:
+
+```json
+{
+  "ok": true,
+  "result": {"status":"queued|running|succeeded|failed","progress":0.4,"output":{...}},
+  "error": null,
+  "meta": {"request_id":"..."}
+}
+```
+
+---
+
+## 8. MCP Developer Mode Interface (Detailed)
+
+### 8.1 Transport
+
+* SSE (text/event-stream)
+* MCP protocol compliant as required by fastmcp
+
+### 8.2 Tool parity
+
+Every capability in Actions must be available via MCP tools.
+Conversely, any MCP tool added must be reachable via REST (internally), even if not exported to Actions.
+
+### 8.3 Recommended MCP tool set (detailed)
+
+#### 8.3.1 `notion.request`
+
+Generic proxy analog for MCP (same allowlist rules as REST).
+Args:
+
+* `connection_id`
+* `method`, `path`, `body`, `query`
+* `idempotency_key` optional
+
+#### 8.3.2 `notion.upsert`
+
+Args mirror REST `/v1/upsert`.
+
+#### 8.3.3 `notion.link`
+
+Args mirror REST `/v1/link`.
+
+#### 8.3.4 `notion.bulk`
+
+Args mirror REST `/v1/bulk`.
+
+#### 8.3.5 `notion.job_start` / `notion.job_get`
+
+Job lifecycle via MCP.
+
+### 8.4 Shared core mapping
+
+MCP tool handler must call the same Core Engine functions as REST endpoints.
+
+---
+
+## 9. Storage Schema (Postgres)
+
+### 9.1 Tables
+
+1. `connections`
+
+* id (uuid)
+* workspace_id (text)
+* workspace_name (text)
+* access_token_enc (text)
+* refresh_token_enc (text, nullable)
+* token_expires_at (timestamp, nullable)
+* created_at, updated_at
+
+2. `audit_log`
+
+* id (uuid)
+* connection_id
+* request_id
+* actor ("chatgpt_action" | "chatgpt_mcp")
+* method/tool
+* path/name
+* notion_ids (jsonb)
+* summary (text)
+* success (bool)
+* created_at
+
+3. `idempotency_keys`
+
+* key (text)
+* connection_id
+* request_hash
+* response_body (jsonb)
+* created_at
+* expires_at
+
+Optional:
+4) `os_state`
+
+* connection_id
+* root_page_id
+* spec_version
+* created_ids (jsonb)
+* updated_at
+
+---
+
+## 10. Implementation Notes (FastAPI + Core Engine)
+
+### 10.1 Project layout
+
+* `app/main.py` (FastAPI app)
+* `app/routes/` (routers)
+* `app/mcp/server.py` (fastmcp server wiring)
+* `app/core/engine.py` (shared core engine)
+* `app/services/notion_client.py` (retry/backoff wrapper)
+* `app/services/property_normalizer.py`
+* `app/models/` (Pydantic schemas)
+* `app/db/` (SQLModel/SQLAlchemy)
+* `app/security/` (bearer auth, token encryption)
+* `app/jobs/` (job queue adapters)
+
+### 10.2 Error handling
+
+* Single exception handler returning standard envelope
+* Never leak tokens
+
+### 10.3 Notion API wrapper
+
+* Centralize request logic
+* Retry/backoff
+* Normalize Notion objects
+
+---
+
+## 11. Docker Compose
+
+Services:
+
+* `api`
+* `postgres`
+* optional `redis`
+
+Example env:
+
+* `ACTION_API_TOKEN=...`
+* `NOTION_OAUTH_CLIENT_ID=...`
+* `NOTION_OAUTH_CLIENT_SECRET=...`
+* `NOTION_OAUTH_REDIRECT_URI=https://<host>/oauth/callback`
+* `TOKEN_ENCRYPTION_KEY=...`
+* `DATABASE_URL=...`
+
+---
+
+## 12. Testing & Validation
+
+### 12.1 Unit tests
+
+* bearer auth
+* oauth state validation
+* property normalization
+* idempotency
+
+### 12.2 Integration tests
+
+* stub Notion API
+* ensure parity between MCP and REST
+
+### 12.3 Smoke tests
+
+* `/health`
+* `/openapi.json`
+* OAuth connect
+* create DB
+* upsert page
+* append blocks
+
+---
+
+## 13. Acceptance Criteria
+
+1. OpenAPI imports into ChatGPT Actions successfully.
+2. OAuth connects a Notion workspace and stores tokens.
+3. Actions can: create/query DBs, upsert, link, bulk, jobs.
+4. MCP tools can do the same operations with parity.
+5. All writes audited; idempotency prevents duplicates.
+6. Docker Compose runs locally; works behind Cloudflare.
+
+---
+
+## 14. Out of Scope (v1)
+
+* Multi-user UI
+* Fine-grained per-endpoint scopes beyond connection-level
+* Complex file uploads (Notion limitations)
+* Webhook subscriptions (Notion limitations)
+
+---
+
+## 15. Recommended Implementation Sequence
+
+1. Base FastAPI app + bearer auth + `/openapi.json` + `/health`
+2. OAuth connect + token storage
+3. Notion client wrapper (retry/backoff)
+4. Core primitives (DB/page/block/search)
+5. Property normalizer + upsert + link
+6. Bulk + jobs
+7. Audit + idempotency
+8. MCP server wiring (fastmcp SSE) to core engine
+9. Parity tests + smoke scripts
+10. Hardening (timeouts, metrics, tracing)
