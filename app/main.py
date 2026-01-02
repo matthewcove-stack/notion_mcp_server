@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.models.schemas import StandardResponse, MetaResponse
 from app.middleware import add_request_id_middleware
+from app.middleware.timeout import TimeoutMiddleware
+from app.middleware.metrics import MetricsMiddleware
 from app.exceptions import (
     http_exception_handler,
     validation_exception_handler,
