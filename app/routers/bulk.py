@@ -12,6 +12,7 @@ from app.core.engine import CoreEngine
 from app.models.schemas import StandardResponse, BulkRequest, JobRequest, JobStatus
 from app.services.notion_client import NotionAPIError
 from app.routers.upsert import upsert, link
+from app.decorators.audit import audit_write_operation
 
 logger = structlog.get_logger()
 
