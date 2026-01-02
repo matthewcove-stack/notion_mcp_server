@@ -111,3 +111,22 @@ class AppendBlockChildrenRequest(BaseModel):
     """Append block children request"""
     connection_id: str
     children: List[Dict[str, Any]]
+
+
+# Upsert and Link schemas
+class UpsertRequest(BaseModel):
+    """Upsert request"""
+    connection_id: str
+    database_id: str
+    unique: Dict[str, Any]  # {"property": "Name", "value": "Project X"}
+    properties: Optional[Dict[str, Any]] = None
+    content_blocks: Optional[List[Dict[str, Any]]] = None
+    external_id: Optional[str] = None
+
+
+class LinkRequest(BaseModel):
+    """Link request"""
+    connection_id: str
+    from_obj: Dict[str, Any]  # {"type": "page", "id": "..."}
+    to_obj: Dict[str, Any]  # {"type": "page", "id": "..."}
+    relation_property: str
