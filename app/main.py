@@ -18,6 +18,7 @@ from app.exceptions import (
 from app.db.database import init_db
 from app.security import verify_bearer_token
 from app.routers import oauth, notion, upsert, bulk
+from app.mcp import server as mcp_server
 from fastapi import Depends
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -74,6 +75,7 @@ app.include_router(oauth.router)
 app.include_router(notion.router)
 app.include_router(upsert.router)
 app.include_router(bulk.router)
+app.include_router(mcp_server.router)
 
 
 @app.on_event("startup")
