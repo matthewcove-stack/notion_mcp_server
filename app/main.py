@@ -65,6 +65,7 @@ app.add_middleware(
 # Add middleware (order matters)
 app.add_middleware(MetricsMiddleware)
 app.add_middleware(TimeoutMiddleware, timeout=30.0)
+# Request ID middleware (function-based, must be added after class-based middleware)
 app.middleware("http")(add_request_id_middleware)
 
 # Register exception handlers
