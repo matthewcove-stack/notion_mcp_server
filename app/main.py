@@ -17,7 +17,7 @@ from app.exceptions import (
 )
 from app.db.database import init_db
 from app.security import verify_bearer_token
-from app.routers import oauth, notion, upsert, bulk
+from app.routers import oauth, notion, upsert, bulk, metrics
 from app.mcp import server as mcp_server
 from fastapi import Depends
 from fastapi.exceptions import RequestValidationError
@@ -62,7 +62,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Add request ID middleware
+# Add middleware (order matters)
+app.add_middleware(MetricsMiddleware)
+app.add_middleware(TimeoutMiddleware, timeout=30.0)
 app.middleware("http")(add_request_id_middleware)
 
 # Register exception handlers
@@ -75,6 +77,7 @@ app.include_router(oauth.router)
 app.include_router(notion.router)
 app.include_router(upsert.router)
 app.include_router(bulk.router)
+app.include_router(metrics.router)
 app.include_router(mcp_server.router)
 
 
