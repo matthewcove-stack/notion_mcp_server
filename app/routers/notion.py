@@ -22,6 +22,7 @@ from app.models.schemas import (
     AppendBlockChildrenRequest,
 )
 from app.services.notion_client import NotionAPIError
+from app.decorators.audit import audit_write_operation
 
 logger = structlog.get_logger()
 
