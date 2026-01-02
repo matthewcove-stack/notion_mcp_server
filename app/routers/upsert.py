@@ -10,6 +10,7 @@ from app.core.engine import CoreEngine
 from app.models.schemas import StandardResponse, UpsertRequest, LinkRequest
 from app.services.notion_client import NotionAPIError
 from app.services.property_normalizer import normalize_properties
+from app.decorators.audit import audit_write_operation
 
 logger = structlog.get_logger()
 
@@ -28,6 +29,7 @@ def get_core_engine(db: Session, connection_id: str) -> CoreEngine:
 
 
 @router.post("/upsert", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def upsert(
     request: Request,
     upsert_req: UpsertRequest,
@@ -147,6 +149,7 @@ async def upsert(
 
 
 @router.post("/link", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def link(
     request: Request,
     link_req: LinkRequest,

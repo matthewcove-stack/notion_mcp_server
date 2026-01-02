@@ -30,6 +30,7 @@ def get_core_engine(db: Session, connection_id: str) -> CoreEngine:
 
 
 @router.post("/bulk", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def bulk_operations(
     request: Request,
     bulk_req: BulkRequest,
@@ -202,6 +203,7 @@ async def _execute_link(engine: CoreEngine, link_req, request_id):
 
 
 @router.post("/jobs", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def create_job(
     request: Request,
     job_req: JobRequest,

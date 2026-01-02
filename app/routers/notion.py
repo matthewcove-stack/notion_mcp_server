@@ -78,6 +78,7 @@ async def search_notion(
 
 # Databases
 @router.post("/databases", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def create_database(
     request: Request,
     db_req: CreateDatabaseRequest,
@@ -150,6 +151,7 @@ async def get_database(
 
 
 @router.patch("/databases/{database_id}", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def update_database(
     request: Request,
     database_id: str = Path(...),
@@ -227,6 +229,7 @@ async def query_database(
 
 # Pages
 @router.post("/pages", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def create_page(
     request: Request,
     page_req: CreatePageRequest,
@@ -303,6 +306,7 @@ async def get_page(
 
 
 @router.patch("/pages/{page_id}", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def update_page(
     request: Request,
     page_id: str = Path(...),
@@ -340,6 +344,7 @@ async def update_page(
 
 
 @router.post("/pages/{page_id}/archive", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def archive_page(
     request: Request,
     page_id: str = Path(...),
@@ -417,6 +422,7 @@ async def get_block_children(
 
 
 @router.patch("/blocks/{block_id}", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def update_block(
     request: Request,
     block_id: str = Path(...),
@@ -453,6 +459,7 @@ async def update_block(
 
 
 @router.post("/blocks/{block_id}/children", response_model=StandardResponse)
+@audit_write_operation(actor="chatgpt_action")
 async def append_block_children(
     request: Request,
     block_id: str = Path(...),
