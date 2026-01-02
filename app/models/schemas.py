@@ -130,3 +130,32 @@ class LinkRequest(BaseModel):
     from_obj: Dict[str, Any]  # {"type": "page", "id": "..."}
     to_obj: Dict[str, Any]  # {"type": "page", "id": "..."}
     relation_property: str
+
+
+# Bulk and Jobs schemas
+class BulkOperation(BaseModel):
+    """Single bulk operation"""
+    op: str  # "upsert", "link", "notion.request", etc.
+    args: Dict[str, Any]
+
+
+class BulkRequest(BaseModel):
+    """Bulk operations request"""
+    connection_id: str
+    mode: str = "stop_on_error"  # "stop_on_error" | "continue_on_error"
+    ops: List[BulkOperation]
+
+
+class JobRequest(BaseModel):
+    """Create job request"""
+    connection_id: str
+    kind: str  # "bulk", "os_plan_apply", "migration", "export"
+    args: Dict[str, Any]
+
+
+class JobStatus(BaseModel):
+    """Job status response"""
+    status: str  # "queued", "running", "succeeded", "failed"
+    progress: float  # 0.0 to 1.0
+    output: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None

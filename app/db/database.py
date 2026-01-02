@@ -34,6 +34,9 @@ def get_db():
 def init_db():
     """Initialize database tables"""
     logger.info("initializing_database")
+    # Import all models to ensure they're registered
+    from app.db import models
+    from app.jobs import models as job_models
     Base.metadata.create_all(bind=engine)
     logger.info("database_initialized")
 
