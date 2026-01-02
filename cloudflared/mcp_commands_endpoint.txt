@@ -1,0 +1,89 @@
+# MCP /commands Endpoint Specification
+
+(See full detailed spec below)
+
+## Purpose
+
+Single stable API endpoint allowing ChatGPT to control the Notion Second Brain via MCP.
+
+## Endpoint
+
+POST /commands
+
+Requires Authorization: Bearer MCP_API_KEY
+
+## Core Commands
+
+* second_brain.status
+* second_brain.bootstrap
+* task.create
+* task.list_due_today
+* dashboard.summary
+
+## Request Shape
+
+{
+"request_id": "uuid",
+"command": "string",
+"args": {},
+"dry_run": false,
+"idempotency_key": "string",
+"client_context": {
+"user_timezone": "Europe/London"
+}
+}
+
+## Response Shape
+
+{
+"ok": true,
+"request_id": "uuid",
+"command": "string",
+"result": {},
+"notion": {"created":[],"updated":[]},
+"warnings": [],
+"errors": []
+}
+
+## Behaviour
+
+* Idempotent writes
+* Dry-run validation
+* Structured errors
+* Returns Notion page URLs
+
+## Initial Command Specs
+
+### second_brain.status
+
+Args: {}
+
+### second_brain.bootstrap
+
+Args: {"parent_page_id": "optional", "apply_migrations": true}
+
+### task.create
+
+Args: {"title": "string", "due": "ISO or NL", "project": "name or id", "priority": "Low|Medium|High|Urgent"}
+
+### task.list_due_today
+
+Args: {"timezone": "Europe/London"}
+
+### dashboard.summary
+
+Args: {"days_ahead": 7}
+
+## Implementation Notes
+
+* SQLite idempotency store
+* Command registry router
+* Notion API retry + rate limit handling
+* Keep DB IDs in config or local JSON
+
+## Required Tests
+
+* Auth required
+* Idempotency enforced
+* dry_run causes no writes
+* Ambiguous resolution returns options
