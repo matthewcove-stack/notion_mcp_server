@@ -1,7 +1,7 @@
 """
 Application configuration
 """
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 import os
 
@@ -41,10 +41,11 @@ class Settings(BaseSettings):
     notion_api_max_retries: int = 3
     notion_api_retry_delay: float = 1.0
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "allow"  # Allow extra fields from .env
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="allow"  # Allow extra fields from .env
+    )
 
 
 # Global settings instance
