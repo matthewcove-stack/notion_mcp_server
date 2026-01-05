@@ -123,8 +123,8 @@ jobs:
     - name: Test Docker container
       run: |
         docker-compose up -d
-        sleep 10
-        curl --fail http://localhost:3333/health || exit 1
+        sleep 15
+        curl --fail http://localhost:8000/health || exit 1
         docker-compose down
 
 
