@@ -1,12 +1,9 @@
-tunnel: notionmcp
+tunnel: da1d47b4-6623-4552-b6f8-0a40bbab2bb8
 credentials-file: /etc/cloudflared/notionmcp.json
 
 ingress:
+  # Route traffic from subdomain to MCP server
   - hostname: notionmcp.nowhere-else.co.uk
-    service: http://api:3333
-    originRequest:
-      noTLSVerify: true
-      disableChunkedEncoding: false
+    service: http://mcp:8000
+  # Catch-all rule (must be last)
   - service: http_status:404
-
-

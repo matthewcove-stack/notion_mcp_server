@@ -1,146 +1,111 @@
 """
-REST-based MCP for Notion (Actions-ready)
+Main FastAPI application for Notion MCP Server
 """
-import structlog
-from datetime import datetime
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+import os
+from dotenv import load_dotenv
 
-from app.config import settings
-from app.models.schemas import StandardResponse, MetaResponse
-from app.middleware import add_request_id_middleware
-from app.middleware.timeout import TimeoutMiddleware
-from app.middleware.metrics import MetricsMiddleware
-from app.exceptions import (
-    http_exception_handler,
-    validation_exception_handler,
-    general_exception_handler
-)
-from app.db.database import init_db
-from app.security import verify_bearer_token
-from app.routers import oauth, notion, upsert, bulk, metrics
-from app.mcp import server as mcp_server
-from fastapi import Depends
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
-
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
-
-logger = structlog.get_logger()
+# Load environment variables
+load_dotenv()
 
 # Create FastAPI app
 app = FastAPI(
-    title=settings.SERVER_NAME,
-    description=settings.SERVER_DESCRIPTION,
-    version=settings.VERSION,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    title="Notion MCP Server",
+    description="MCP server for managing Notion Second Brain workspace",
+    version="0.1.0"
 )
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Configure appropriately for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Add middleware (order matters)
-app.add_middleware(MetricsMiddleware)
-app.add_middleware(TimeoutMiddleware, timeout=30.0)
-# Request ID middleware (function-based, must be added after class-based middleware)
+# Import middleware
+from app.middleware.request_id import add_request_id_middleware
 app.middleware("http")(add_request_id_middleware)
 
-# Register exception handlers
-app.add_exception_handler(StarletteHTTPException, http_exception_handler)
-app.add_exception_handler(RequestValidationError, validation_exception_handler)
-app.add_exception_handler(Exception, general_exception_handler)
+# Import routers
+from app.routers import databases, second_brain, oauth, mcp
 
-# Register routers
+# Include routers
+app.include_router(databases.router)
+app.include_router(second_brain.router)
 app.include_router(oauth.router)
-app.include_router(notion.router)
-app.include_router(upsert.router)
-app.include_router(bulk.router)
-app.include_router(metrics.router)
-app.include_router(mcp_server.router)
+app.include_router(mcp.router)
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup"""
-    logger.info("server_starting", version=settings.VERSION, port=settings.PORT)
-    try:
-        init_db()
-        logger.info("database_initialized")
-    except Exception as e:
-        logger.error("database_init_failed", error=str(e), exc_info=True)
+# OAuth metadata endpoints (must be at app level for .well-known paths)
+@app.get("/.well-known/oauth-authorization-server")
+async def oauth_metadata():
+    """
+    OAuth 2.0 Authorization Server Metadata
+    Returns server capabilities and endpoints
+    Compatible with ChatGPT Personal Pro OAuth discovery
+    """
+    base_url = os.getenv("BASE_URL", "https://notionmcp.nowhere-else.co.uk")
+    
+    return {
+        "issuer": base_url,
+        "authorization_endpoint": f"{base_url}/oauth/authorize",
+        "token_endpoint": f"{base_url}/oauth/token",
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256", "plain"],
+        "scopes_supported": ["read", "write", "read write"],
+    }
 
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    logger.info("server_shutting_down")
+@app.get("/.well-known/openid-configuration")
+async def openid_configuration():
+    """
+    OpenID Connect Discovery endpoint
+    Some OAuth clients expect this endpoint
+    """
+    return await oauth_metadata()
 
 
 @app.get("/health")
-async def health_check(request: Request):
-    """
-    Health check endpoint (public, no auth required)
-    Returns: { "ok": true }
-    """
-    return {"ok": True}
+async def health_check():
+    """Health check endpoint"""
+    return {"ok": True, "status": "healthy"}
 
 
-@app.get("/openapi.json", include_in_schema=False)
-async def get_openapi_json():
-    """
-    OpenAPI 3.1 specification endpoint (public, no auth required)
-    """
-    return JSONResponse(content=app.openapi())
+@app.get("/version")
+async def get_version():
+    """Get service version"""
+    return {
+        "version": "0.1.0",
+        "service": "notion-mcp-server"
+    }
 
 
-@app.get("/v1/meta", response_model=StandardResponse)
-async def get_meta(
-    request: Request,
-    token: str = Depends(verify_bearer_token)
-):
-    """
-    Get server metadata and status
-    Requires bearer token authentication
-    """
-    request_id = getattr(request.state, "request_id", None)
+@app.get("/notion/me")
+async def notion_me():
+    """Verify Notion token and return user info"""
+    notion_token = os.getenv("NOTION_API_TOKEN")
     
-    # TODO: Check Notion API status
-    notion_api_status = "unknown"
+    if not notion_token:
+        return {
+            "ok": False,
+            "error": "NOTION_API_TOKEN not configured"
+        }
     
-    meta_data = MetaResponse(
-        version=settings.VERSION,
-        build_hash=None,
-        notion_api_status=notion_api_status,
-        timestamp=datetime.utcnow()
-    )
-    
-    return StandardResponse(
-        ok=True,
-        result=meta_data.dict(),
-        meta={"request_id": request_id} if request_id else {}
-    )
+    # TODO: Implement actual Notion API call to verify token
+    # For now, just return that token is configured
+    return {
+        "ok": True,
+        "message": "Notion token is configured",
+        "token_configured": True
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+

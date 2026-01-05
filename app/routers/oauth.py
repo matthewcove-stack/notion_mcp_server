@@ -1,240 +1,192 @@
 """
-OAuth endpoints for Notion workspace connection
+OAuth 2.0 endpoints for ChatGPT MCP connector authentication
+Compatible with ChatGPT Personal Pro developer mode
 """
-import uuid
-import httpx
-from datetime import datetime, timedelta
-from typing import Optional
-from fastapi import APIRouter, Request, Query, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy.orm import Session
+from typing import Optional
+from pydantic import BaseModel
+import os
+import secrets
+import httpx
+from urllib.parse import urlencode
 import structlog
 
-from app.config import settings
-from app.db.database import get_db
-from app.db.models import Connection
-from app.services.token_encryption import get_token_encryption
-from app.models.schemas import StandardResponse
-
 logger = structlog.get_logger()
-
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
-NOTION_OAUTH_BASE = "https://api.notion.com/v1/oauth"
-NOTION_AUTHORIZE_URL = f"{NOTION_OAUTH_BASE}/authorize"
-NOTION_TOKEN_URL = f"{NOTION_OAUTH_BASE}/token"
+
+class OAuthTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "Bearer"
+    expires_in: Optional[int] = None
+    refresh_token: Optional[str] = None
+    scope: Optional[str] = None
 
 
-@router.get("/start")
-async def oauth_start(
-    request: Request,
-    state: Optional[str] = Query(None),
-    return_url: Optional[str] = Query(None),
-    connection_hint: Optional[str] = Query(None),
+class OAuthErrorResponse(BaseModel):
+    error: str
+    error_description: Optional[str] = None
+
+
+@router.get("/authorize")
+async def authorize(
+    response_type: str = Query(..., description="Must be 'code' for authorization code flow"),
+    client_id: str = Query(..., description="ChatGPT's client ID"),
+    redirect_uri: str = Query(..., description="ChatGPT's redirect URI"),
+    scope: Optional[str] = Query(None, description="Requested scopes"),
+    state: Optional[str] = Query(None, description="State parameter for CSRF protection"),
+    code_challenge: Optional[str] = Query(None, description="PKCE code challenge"),
+    code_challenge_method: Optional[str] = Query(None, description="PKCE method (S256 or plain)"),
 ):
     """
-    Start OAuth flow - redirects to Notion authorization
+    OAuth 2.0 Authorization endpoint
+    ChatGPT will redirect users here to authorize access to the MCP server.
     
-    Query params:
-    - state: Optional state parameter for CSRF protection
-    - return_url: Optional URL to redirect to after OAuth completes
-    - connection_hint: Optional hint for connection identification
+    For ChatGPT Personal Pro, this endpoint handles the OAuth authorization flow.
     """
-    if not settings.NOTION_OAUTH_CLIENT_ID:
+    # Validate response_type
+    if response_type != "code":
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OAuth not configured"
+            status_code=400,
+            detail="response_type must be 'code' for authorization code flow"
         )
     
-    if not settings.NOTION_OAUTH_REDIRECT_URI:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OAuth redirect URI not configured"
-        )
+    # Validate redirect_uri (in production, validate against registered redirect URIs)
+    # For ChatGPT, we'll accept the redirect_uri as provided
     
-    # Generate state if not provided
-    if not state:
-        state = str(uuid.uuid4())
+    # Store authorization request parameters
+    # In production: Store in Redis/database with TTL (10 minutes)
+    # For now: Generate code immediately (simplified flow)
     
-    # Build authorization URL
-    params = {
-        "client_id": settings.NOTION_OAUTH_CLIENT_ID,
-        "redirect_uri": settings.NOTION_OAUTH_REDIRECT_URI,
-        "response_type": "code",
-        "state": state,
+    # Generate authorization code
+    auth_code = secrets.token_urlsafe(32)
+    
+    # Store code with metadata (in production, use Redis)
+    # Store: code -> {client_id, redirect_uri, code_challenge, expires_at}
+    # For now, we'll proceed with code generation
+    
+    # Build redirect URL with authorization code
+    redirect_params = {
+        "code": auth_code,
     }
+    if state:
+        redirect_params["state"] = state
     
-    # Add return_url to state or store separately (simplified: append to state)
-    if return_url:
-        params["state"] = f"{state}|{return_url}"
-    
-    # Build query string
-    query_string = "&".join([f"{k}={v}" for k, v in params.items()])
-    auth_url = f"{NOTION_AUTHORIZE_URL}?{query_string}"
+    redirect_url = f"{redirect_uri}?{urlencode(redirect_params)}"
     
     logger.info(
-        "oauth_start",
-        state=state,
-        return_url=return_url,
-        connection_hint=connection_hint,
+        "oauth_authorize",
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        scope=scope,
+        has_code_challenge=bool(code_challenge)
     )
     
-    return RedirectResponse(url=auth_url)
+    # For ChatGPT MCP, we can auto-approve and redirect immediately
+    # In production, you might want to show a consent screen first
+    # Redirect back to ChatGPT with authorization code
+    return RedirectResponse(url=redirect_url)
 
 
-@router.get("/callback")
-async def oauth_callback(
-    request: Request,
-    code: str = Query(...),
-    state: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
-):
+@router.post("/token", response_model=OAuthTokenResponse)
+async def token(request: Request):
     """
-    OAuth callback - exchanges code for tokens and creates/updates connection
+    OAuth 2.0 Token endpoint
+    ChatGPT exchanges authorization code for access token.
+    
+    Supports both authorization_code and refresh_token grant types.
+    Compatible with ChatGPT Personal Pro MCP connector OAuth flow.
+    
+    Accepts form-encoded POST data (standard OAuth 2.0 format).
     """
-    if not settings.NOTION_OAUTH_CLIENT_ID or not settings.NOTION_OAUTH_CLIENT_SECRET:
+    # Read form data (standard OAuth 2.0 format)
+    content_type = request.headers.get("content-type", "")
+    
+    if "application/x-www-form-urlencoded" in content_type:
+        form_data = await request.form()
+        grant_type = form_data.get("grant_type")
+        code = form_data.get("code")
+        refresh_token = form_data.get("refresh_token")
+        redirect_uri = form_data.get("redirect_uri")
+        client_id = form_data.get("client_id")
+        client_secret = form_data.get("client_secret")
+        code_verifier = form_data.get("code_verifier")
+    elif "application/json" in content_type:
+        # Also support JSON for compatibility
+        json_data = await request.json()
+        grant_type = json_data.get("grant_type")
+        code = json_data.get("code")
+        refresh_token = json_data.get("refresh_token")
+        redirect_uri = json_data.get("redirect_uri")
+        client_id = json_data.get("client_id")
+        client_secret = json_data.get("client_secret")
+        code_verifier = json_data.get("code_verifier")
+    else:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OAuth not configured"
+            status_code=400,
+            detail="Content-Type must be application/x-www-form-urlencoded or application/json"
         )
     
-    request_id = getattr(request.state, "request_id", None)
+    if not grant_type:
+        raise HTTPException(status_code=400, detail="grant_type parameter required")
     
-    try:
-        # Extract return_url from state if present
-        return_url = None
-        if state and "|" in state:
-            state, return_url = state.split("|", 1)
+    if grant_type == "authorization_code":
+        if not code:
+            raise HTTPException(status_code=400, detail="code parameter required for authorization_code grant")
         
-        # Exchange code for tokens
-        logger.info("oauth_callback_exchange", code_prefix=code[:10] if code else None, state=state)
+        # Validate authorization code (in production, check against stored codes in Redis/DB)
+        # Verify code hasn't been used and hasn't expired
+        # For now, we'll accept any code format
         
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                NOTION_TOKEN_URL,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "redirect_uri": settings.NOTION_OAUTH_REDIRECT_URI,
-                },
-                auth=(settings.NOTION_OAUTH_CLIENT_ID, settings.NOTION_OAUTH_CLIENT_SECRET),
-                timeout=30.0,
-            )
-            
-            if response.status_code != 200:
-                logger.error(
-                    "oauth_token_exchange_failed",
-                    status_code=response.status_code,
-                    response=response.text[:200],
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Token exchange failed: {response.status_code}"
-                )
-            
-            token_data = response.json()
+        # Validate PKCE if code_challenge was provided during authorization
+        # if code_challenge was S256, verify code_verifier matches
         
-        # Extract token information
-        access_token = token_data.get("access_token")
-        refresh_token = token_data.get("refresh_token")  # May not be present
-        expires_in = token_data.get("expires_in")  # May not be present
+        # Generate access token
+        access_token = secrets.token_urlsafe(64)
+        refresh_token_value = secrets.token_urlsafe(64)
         
-        if not access_token:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No access token in response"
-            )
+        # Store tokens (in production, encrypt and store in database)
+        # Map: access_token -> {user_id, client_id, expires_at, scopes}
         
-        # Get workspace information
-        encryption = get_token_encryption()
+        logger.info(
+            "oauth_token_exchange",
+            grant_type=grant_type,
+            client_id=client_id,
+            has_code_verifier=bool(code_verifier)
+        )
         
-        async with httpx.AsyncClient() as client:
-            workspace_response = await client.get(
-                "https://api.notion.com/v1/users/me",
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Notion-Version": settings.NOTION_API_VERSION,
-                },
-                timeout=30.0,
-            )
-            
-            if workspace_response.status_code != 200:
-                logger.warning(
-                    "oauth_workspace_info_failed",
-                    status_code=workspace_response.status_code,
-                )
-                # Continue without workspace info
-        
-        # Extract workspace info (simplified - Notion API may return different structure)
-        workspace_id = None
-        workspace_name = None
-        
-        if workspace_response.status_code == 200:
-            workspace_data = workspace_response.json()
-            # Notion API structure may vary - adjust as needed
-            if "bot" in workspace_data:
-                bot = workspace_data["bot"]
-                workspace_id = bot.get("workspace", {}).get("id") if isinstance(bot.get("workspace"), dict) else None
-                workspace_name = bot.get("workspace", {}).get("name") if isinstance(bot.get("workspace"), dict) else None
-        
-        # Encrypt tokens
-        access_token_enc = encryption.encrypt(access_token)
-        refresh_token_enc = encryption.encrypt(refresh_token) if refresh_token else None
-        
-        # Calculate expiration
-        token_expires_at = None
-        if expires_in:
-            token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
-        
-        # Check if connection already exists (by workspace_id)
-        connection = None
-        if workspace_id:
-            connection = db.query(Connection).filter(Connection.workspace_id == workspace_id).first()
-        
-        if connection:
-            # Update existing connection
-            connection.access_token_enc = access_token_enc
-            connection.refresh_token_enc = refresh_token_enc
-            connection.token_expires_at = token_expires_at
-            if workspace_name:
-                connection.workspace_name = workspace_name
-            connection.updated_at = datetime.utcnow()
-            logger.info("oauth_connection_updated", connection_id=str(connection.id), workspace_id=workspace_id)
-        else:
-            # Create new connection
-            connection = Connection(
-                workspace_id=workspace_id or str(uuid.uuid4()),
-                workspace_name=workspace_name,
-                access_token_enc=access_token_enc,
-                refresh_token_enc=refresh_token_enc,
-                token_expires_at=token_expires_at,
-            )
-            db.add(connection)
-            logger.info("oauth_connection_created", connection_id=str(connection.id), workspace_id=workspace_id)
-        
-        db.commit()
-        
-        # Redirect to return_url or return success
-        if return_url:
-            return RedirectResponse(url=return_url)
-        
-        return StandardResponse(
-            ok=True,
-            result={
-                "connection_id": str(connection.id),
-                "workspace_id": connection.workspace_id,
-                "workspace_name": connection.workspace_name,
-            },
-            meta={"request_id": request_id} if request_id else {},
+        return OAuthTokenResponse(
+            access_token=access_token,
+            token_type="Bearer",
+            expires_in=3600,  # 1 hour
+            refresh_token=refresh_token_value,
+            scope="read write"
         )
     
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("oauth_callback_error", error=str(e), exc_info=True)
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"OAuth callback failed: {str(e)}"
+    elif grant_type == "refresh_token":
+        if not refresh_token:
+            raise HTTPException(status_code=400, detail="refresh_token parameter required for refresh_token grant")
+        
+        # Validate refresh token and issue new access token
+        # In production, validate against stored tokens
+        
+        new_access_token = secrets.token_urlsafe(64)
+        
+        logger.info("oauth_token_refresh", grant_type=grant_type)
+        
+        return OAuthTokenResponse(
+            access_token=new_access_token,
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token=refresh_token,  # Optionally rotate refresh token
+            scope="read write"
         )
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported grant_type: {grant_type}")
+
+
+# Note: .well-known routes need to be registered at app level, not router level
+# These will be added to main.py
 

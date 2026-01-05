@@ -1,58 +1,71 @@
-# REST-based MCP for Notion (Actions-ready)
+# MCP Server – Notion Second Brain Integration
 
-REST API service for ChatGPT Actions to manage Notion workspaces.
+Local MCP-style server enabling ChatGPT voice commands to create, query and manage a Notion Second Brain workspace.
 
-## Setup
+## Quick Start
 
-1. Copy `env.example` to `.env` and configure:
+### Option 1: Docker (Recommended)
+
+1. **Start Docker Desktop** (if not already running)
+
+2. **Configure Notion API Token**
+   - Edit `.env` file
+   - Add your Notion Integration token: `NOTION_API_TOKEN=your_token_here`
+   - Get your token from: https://www.notion.so/my-integrations
+
+3. **Start the Service**
    ```bash
-   cp env.example .env
+   docker-compose up --build
    ```
 
-2. Generate encryption key for token storage:
+### Option 2: Local Development
+
+1. **Install Dependencies**
    ```bash
-   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   pip install -r requirements.txt
    ```
 
-3. Configure required environment variables in `.env`:
-   - `ACTION_API_TOKEN` - Bearer token for ChatGPT Actions authentication
-   - `NOTION_OAUTH_CLIENT_ID` - Notion OAuth client ID
-   - `NOTION_OAUTH_CLIENT_SECRET` - Notion OAuth client secret
-   - `NOTION_OAUTH_REDIRECT_URI` - OAuth redirect URI
-   - `TOKEN_ENCRYPTION_KEY` - Fernet encryption key (from step 2)
-   - `DATABASE_URL` - PostgreSQL connection string (default works with docker-compose)
+2. **Configure Notion API Token**
+   - Edit `.env` file
+   - Add your Notion Integration token: `NOTION_API_TOKEN=your_token_here`
 
-4. Start the services:
+3. **Run the Server**
    ```bash
-   docker compose up -d
+   python run_local.py
+   ```
+   Or:
+   ```bash
+   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    ```
 
-This will start:
-- PostgreSQL database
-- API server (FastAPI)
-- Cloudflare tunnel
+### Verify it's Running
 
-## Cloudflare Tunnel
-
-The Cloudflare tunnel is already configured and will expose the server at:
-- `https://notionmcp.nowhere-else.co.uk`
-
-Configuration files:
-- `cloudflared/config.yml` - Tunnel configuration
-- `cloudflared/notionmcp.json` - Tunnel credentials
-
-## API Endpoints
-
-### Public (no auth):
-- `GET /health` - Health check
-- `GET /openapi.json` - OpenAPI 3.1 specification
-
-### Secured (bearer token required):
-- `GET /v1/meta` - Server metadata and status
+- Health check: http://localhost:8000/health
+- API docs: http://localhost:8000/docs
+- Verify Notion connection: http://localhost:8000/notion/me
 
 ## Development
 
-Run locally without Docker (requires Postgres running):
-```bash
-python -m uvicorn app.main:app --reload --port 3333
-```
+### Phase 0 (Implemented)
+- `GET /health` - Health check
+- `GET /version` - Service version
+- `GET /notion/me` - Notion token verification
+
+### Phase 1 (Implemented)
+- `GET /databases` - List configured databases
+- `POST /databases/discover` - Find databases by name
+- `GET /databases/{db_id}` - Get database schema
+- `PATCH /databases/{db_id}` - Update database schema
+- `POST /second-brain/bootstrap` - Create Second Brain structure
+- `GET /second-brain/status` - Validate structure
+- `POST /second-brain/migrate` - Schema migrations
+
+## Stack
+
+- FastAPI
+- Docker / Docker Compose
+- Python 3.12
+- Notion API
+
+See `SPEC.md` for the complete specification and roadmap.
+

@@ -1,1 +1,4 @@
-# MCP Notion Server - Fresh Start
+"""
+Notion MCP Server Application Package
+"""
+
