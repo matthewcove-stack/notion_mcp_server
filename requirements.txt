@@ -5,4 +5,22 @@ structlog>=23.2.0
 httpx>=0.25.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
+
+# Notion SDK
+notion-client>=2.2.1
+
+# Database
+sqlalchemy>=2.0.23
+asyncpg>=0.29.0
+alembic>=1.13.0
+
+# Security & Encryption
+cryptography>=41.0.7
+
+# Job Queue
+celery>=5.3.4
+redis>=5.0.1
+
+# MCP Protocol
+sse-starlette>=1.8.2
 python-multipart>=0.0.6

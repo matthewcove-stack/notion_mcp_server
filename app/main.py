@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Initialize database
+from app.db.database import init_db
+init_db()
+
 # Create FastAPI app
 app = FastAPI(
     title="Notion MCP Server",
@@ -29,14 +33,36 @@ app.add_middleware(
 from app.middleware.request_id import add_request_id_middleware
 app.middleware("http")(add_request_id_middleware)
 
+# Register exception handlers
+from app.exceptions import (
+    NotionMCPException,
+    notion_mcp_exception_handler,
+    general_exception_handler
+)
+app.add_exception_handler(NotionMCPException, notion_mcp_exception_handler)
+app.add_exception_handler(Exception, general_exception_handler)
+
 # Import routers
-from app.routers import databases, second_brain, oauth, mcp
+from app.routers import (
+    databases,
+    pages,
+    blocks,
+    operations,
+    jobs,
+    second_brain,
+    oauth,
+    mcp
+)
 
 # Include routers
-app.include_router(databases.router)
-app.include_router(second_brain.router)
-app.include_router(oauth.router)
-app.include_router(mcp.router)
+app.include_router(operations.router)  # /search, /upsert, /link, /bulk
+app.include_router(databases.router)  # /databases
+app.include_router(pages.router)  # /pages
+app.include_router(blocks.router)  # /blocks
+app.include_router(jobs.router)  # /jobs
+app.include_router(second_brain.router)  # /second-brain
+app.include_router(oauth.router)  # /oauth
+app.include_router(mcp.router)  # /mcp
 
 
 # OAuth metadata endpoints (must be at app level for .well-known paths)
@@ -88,21 +114,32 @@ async def get_version():
 @app.get("/notion/me")
 async def notion_me():
     """Verify Notion token and return user info"""
-    notion_token = os.getenv("NOTION_API_TOKEN")
+    from app.models.schemas import ConnectionService
+    from app.services.notion_client import get_notion_client
+    from app.core.engine import NotionEngine
     
-    if not notion_token:
+    try:
+        token = ConnectionService.get_token()
+        if not token:
+            return {
+                "ok": False,
+                "error": "NOTION_API_TOKEN not configured"
+            }
+        
+        client = get_notion_client(token)
+        engine = NotionEngine(client)
+        user_info = await engine.users_me()
+        
+        return {
+            "ok": True,
+            "message": "Notion token is valid",
+            "user": user_info
+        }
+    except Exception as e:
         return {
             "ok": False,
-            "error": "NOTION_API_TOKEN not configured"
+            "error": str(e)
         }
-    
-    # TODO: Implement actual Notion API call to verify token
-    # For now, just return that token is configured
-    return {
-        "ok": True,
-        "message": "Notion token is configured",
-        "token_configured": True
-    }
 
 
 if __name__ == "__main__":

@@ -308,52 +308,151 @@ async def mcp_sse_post(request: Request):
 
 async def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Execute a tool call from ChatGPT
+    Execute a tool call from ChatGPT with actual Notion API integration
     """
+    from app.core.engine import NotionEngine
+    from app.services.notion_client import get_notion_client
+    from app.models.schemas import ConnectionService
+    
     logger.info("executing_tool", tool=tool_name, args=args)
     
-    # Placeholder implementations - will connect to actual Notion API later
-    if tool_name == "notion.list_databases":
-        return {
-            "databases": [
-                {"id": "db1", "title": "Tasks", "type": "database"},
-                {"id": "db2", "title": "Notes", "type": "database"}
-            ]
-        }
+    # Get Notion engine
+    token = ConnectionService.get_token()
+    if not token:
+        return {"error": "NOTION_API_TOKEN not configured"}
     
-    elif tool_name == "notion.get_database":
-        db_id = args.get("database_id")
-        return {
-            "id": db_id,
-            "title": "Sample Database",
-            "properties": {
-                "Name": {"type": "title"},
-                "Status": {"type": "select"}
+    client = get_notion_client(token)
+    engine = NotionEngine(client)
+    
+    try:
+        # Database operations
+        if tool_name == "notion.list_databases":
+            databases = await engine.database_list()
+            return {"databases": databases, "count": len(databases)}
+        
+        elif tool_name == "notion.get_database":
+            db_id = args.get("database_id")
+            database = await engine.database_get(db_id)
+            return database
+        
+        elif tool_name == "notion.create_database":
+            database = await engine.database_create(
+                parent_page_id=args["parent_page_id"],
+                title=args["title"],
+                properties=args["properties"],
+                icon=args.get("icon"),
+                cover=args.get("cover")
+            )
+            return database
+        
+        elif tool_name == "notion.query_database":
+            results = await engine.database_query(
+                database_id=args["database_id"],
+                filter=args.get("filter"),
+                sorts=args.get("sorts")
+            )
+            return results
+        
+        # Page operations
+        elif tool_name == "notion.create_page":
+            # Handle simplified format
+            if "database_id" in args and "title" in args:
+                # Convert to full format
+                parent = {"type": "database_id", "database_id": args["database_id"]}
+                properties = args.get("properties", {})
+                if "title" in args:
+                    properties["Name"] = {"type": "title", "value": args["title"]}
+                page = await engine.page_create(
+                    parent=parent,
+                    properties=properties,
+                    children=args.get("children")
+                )
+            else:
+                # Full format
+                page = await engine.page_create(
+                    parent=args["parent"],
+                    properties=args["properties"],
+                    children=args.get("children")
+                )
+            return page
+        
+        elif tool_name == "notion.get_page":
+            page = await engine.page_get(args["page_id"])
+            return page
+        
+        elif tool_name == "notion.update_page":
+            page = await engine.page_update(
+                page_id=args["page_id"],
+                properties=args.get("properties"),
+                archived=args.get("archived")
+            )
+            return page
+        
+        # Search
+        elif tool_name == "notion.search":
+            results = await engine.search(
+                query=args.get("query", ""),
+                filter=args.get("filter"),
+                sort=args.get("sort")
+            )
+            return results
+        
+        # High-level operations
+        elif tool_name == "notion.upsert":
+            page = await engine.upsert_page(
+                database_id=args["database_id"],
+                unique_property=args["unique_property"],
+                unique_value=args["unique_value"],
+                properties=args["properties"],
+                children=args.get("children")
+            )
+            return page
+        
+        elif tool_name == "notion.link":
+            page = await engine.link_pages(
+                from_page_id=args["from_page_id"],
+                to_page_id=args["to_page_id"],
+                relation_property=args["relation_property"]
+            )
+            return page
+        
+        elif tool_name == "notion.bulk":
+            results = await engine.bulk_operations(
+                operations=args["operations"],
+                mode=args.get("mode", "stop_on_error")
+            )
+            return results
+        
+        # Blocks
+        elif tool_name == "notion.append_blocks":
+            result = await engine.block_children_append(
+                block_id=args["block_id"],
+                children=args["children"]
+            )
+            return result
+        
+        # Second Brain operations
+        elif tool_name == "second_brain.status":
+            databases = await engine.database_list()
+            return {
+                "initialized": len(databases) > 0,
+                "databases_count": len(databases),
+                "databases": [{"id": db["id"], "title": db.get("title", [{}])[0].get("plain_text", "Untitled")} for db in databases[:5]]
             }
-        }
+        
+        elif tool_name == "second_brain.bootstrap":
+            return {
+                "status": "info",
+                "message": "Second Brain bootstrap should be done via direct database creation",
+                "note": "Use notion.create_database to create your databases with desired schemas"
+            }
+        
+        else:
+            raise ValueError(f"Unknown tool: {tool_name}")
     
-    elif tool_name == "notion.create_page":
-        return {
-            "id": "page_123",
-            "url": "https://notion.so/page_123",
-            "title": args.get("title", "New Page")
-        }
-    
-    elif tool_name == "second_brain.status":
-        return {
-            "status": "not_configured",
-            "message": "Second Brain structure not found"
-        }
-    
-    elif tool_name == "second_brain.bootstrap":
-        return {
-            "status": "success",
-            "message": "Second Brain structure created",
-            "databases_created": 5
-        }
-    
-    else:
-        raise ValueError(f"Unknown tool: {tool_name}")
+    except Exception as e:
+        logger.error("tool_execution_error", tool=tool_name, error=str(e), exc_info=True)
+        return {"error": str(e), "tool": tool_name}
 
 
 @router.get("")
